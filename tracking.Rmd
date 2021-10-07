@@ -1,0 +1,95 @@
+---
+title: "EPSCoR Publication-Data Tracking"
+output: html_notebook
+---
+
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(httr)
+library(urltools)
+library(jsonlite)
+```
+## Set base values
+```{r}
+# hide the API key value from display in the environment, but still make it available for access and use
+.api_key <- rstudioapi::askForPassword("AirTable API key")
+.base_id <- rstudioapi::askForPassword("AirTable Base ID")
+base_url <- "https://api.airtable.com/v0"
+max_records <- 1000
+```
+
+## API Access functions
+```{r}
+airtable_get_values <- function(endpoint, base_id, api_key, table, max_records) {
+  full_endpoint <- paste(endpoint, base_id, table, sep="/")
+  #print(full_endpoint)
+  r <- full_endpoint
+  r <- param_set(r, key = "maxRecords", value = "max_records")
+  r <- param_set(r, key = "pageSize", value = "max_records")
+  r <- param_set(r, key = "cellFormat", value = "json")
+  r <- param_set(r, key = "view", value = url_encode("Grid view"))
+  r <- param_set(r, key = "api_key", value = api_key)
+  print(paste("Retrieving: ", r))
+  resp <- GET(r)
+  return(fromJSON(content(resp,"text"))[["records"]][["fields"]])
+}
+```
+
+
+```{r}
+# Spreadsheet-based data
+data_pubs <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "pubs", 
+  max_records = max_records) %>% 
+  filter(title != "")
+
+data_pub_authors <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "pub_authors", 
+  max_records = max_records)$records
+
+data_data_authors <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "data_authors", 
+  max_records = max_records) $records
+
+data_datasets <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "datasets", 
+  max_records = max_records)$records
+
+data_code <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "code", 
+  max_records = max_records)$records
+
+data_authors <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "authors", 
+  max_records = max_records)$records
+
+data_contacts <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "contacts", 
+  max_records = max_records)$records
+
+
+
+```
