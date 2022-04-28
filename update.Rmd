@@ -1,0 +1,163 @@
+---
+title: "update"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(httr)
+library(urltools)
+library(jsonlite)
+```
+## Set base values
+```{r}
+# hide the API key value from display in the environment, but still make it available for access and use
+.api_key <- rstudioapi::askForPassword("AirTable API key")
+.base_id <- rstudioapi::askForPassword("AirTable Base ID")
+base_url <- "https://api.airtable.com/v0"
+max_records <- 1000
+pubs_excel_file <- "data/ER_Core_Pubs_Sheet.xlsx"
+```
+
+## API Access functions
+```{r}
+# get a set of records from AirTable
+airtable_get_values <- function(endpoint, base_id, api_key, table, max_records = 1000, filter_formula = "") {
+  full_endpoint <- paste(endpoint, base_id, table, sep="/")
+  #print(full_endpoint)
+  r <- full_endpoint
+  r <- param_set(r, key = "maxRecords", value = "max_records")
+  r <- param_set(r, key = "pageSize", value = "max_records")
+  r <- param_set(r, key = "cellFormat", value = "json")
+  r <- param_set(r, key = "view", value = url_encode("Grid view"))
+  r <- param_set(r, key = "filterByFormula", value = url_encode(filter_formula))
+  r <- param_set(r, key = "api_key", value = api_key)
+  #print(paste("Retrieving: ", r))
+  resp <- GET(r)
+  return(fromJSON(content(resp,"text"))[["records"]][["fields"]])
+}
+
+# create a new AirTable record
+airtable_set_values <- function(endpoint, base_id, api_key, table, method, body) {
+  full_endpoint <- paste(endpoint, base_id, table, sep="/")
+  #print(full_endpoint)
+  r <- full_endpoint
+  r <- param_set(r, key = "api_key", value = api_key)
+  #print(paste("Retrieving: ", r))
+  resp <- post(r)
+  return(fromJSON(content(resp,"text"))[["records"]][["fields"]])
+}
+
+```
+
+```{r}
+# test a single known pub
+pubs_match <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "pubs", 
+  max_records = max_records,
+  filter_formula = "{title} = 'Recommending Packages of Multi-Criteria Items to Groups'"
+)
+```
+
+```{r}
+pubs_master <- read_excel(pubs_excel_file)
+new_pubs <- tibble(
+  matched = logical(),
+  pub_title = character(),
+  pub_doi = character(),
+  pub_status = character(),
+  pub_citation = character(),
+  pub_date = as.POSIXct(NA),
+  pub_name = character(),
+  pub_peer = character(),
+  pub_type = character(),
+  pub_link = character(),
+  pub_authors = character(), 
+  pub_authors_non_epscor = character()
+)
+
+for (i in seq(nrow(pubs_master))) {
+  pub_title <- pubs_master[[i,"Publication Title"]]
+  pub_doi <- pubs_master[[i,"DOI"]]
+  pub_status <- pubs_master[[i,"Status"]]
+  pub_citation <- pubs_master[[i,"Citation"]]
+  pub_date <- pubs_master[[i,"Publication Date"]]
+  pub_name <- pubs_master[[i,"Publication Name"]]
+  pub_peer <- pubs_master[[i,"Peer Reviewed"]]
+  pub_type <- pubs_master[[i,"Publication Type"]]
+  pub_link <- pubs_master[[i,"Publication Link"]]
+  pub_authors <- pubs_master[[i, "EPSCoR Author(s)"]]
+  pub_authors_non_epscor <- pubs_master[[i, "Non-EPSCoR Authors"]]
+  
+  pubs_match <- airtable_get_values(
+    endpoint = base_url, 
+    base_id = .base_id, 
+    api_key = .api_key, 
+    table = "pubs", 
+    max_records = max_records,
+    filter_formula = paste("{title} = ", "'", pub_title, "'", sep="") 
+  )
+  print("")
+  if (is.null(pubs_match)) {
+    print(paste("unmatched:", pub_title, sep=""))
+    new_pubs <- new_pubs  %>%  add_row(
+      matched = FALSE,
+      pub_title = pub_title,
+      pub_doi = pub_doi,
+      pub_status = pub_status,
+      pub_citation = pub_citation,
+      pub_date = pub_date,
+      pub_name = pub_name,
+      pub_peer = pub_peer,
+      pub_type = pub_type,
+      pub_link = pub_link,
+      pub_authors = pub_authors, 
+      pub_authors_non_epscor = pub_authors_non_epscor
+    )
+  } else {
+    print(paste("matched:", pub_title, sep=""))
+    new_pubs <- new_pubs  %>%  add_row(
+      matched = TRUE,
+      pub_title = pub_title,
+      pub_doi = pub_doi,
+      pub_status = pub_status,
+      pub_citation = pub_citation,
+      pub_date = pub_date,
+      pub_name = pub_name,
+      pub_peer = pub_peer,
+      pub_type = pub_type,
+      pub_link = pub_link,
+      pub_authors = pub_authors, 
+      pub_authors_non_epscor = pub_authors_non_epscor
+    )
+  }
+  
+  epscor_authors <- str_split(pub_authors, ", ")[[1]]
+  for (name in epscor_authors) {
+    name_parts <- str_split(name, " ")[[1]]
+    last_name <- name_parts[length(name_parts)]
+    first_name <- paste(name_parts[1:length(name_parts)-1], collapse=" ")
+    print(paste(last_name, first_name, sep=", "))
+   authors_match <- airtable_get_values(
+      endpoint = base_url, 
+      base_id = .base_id, 
+      api_key = .api_key, 
+      table = "authors", 
+      max_records = max_records,
+      filter_formula = paste("{title} = ", "'", pub_title, "'", sep="") 
+    )
+  }
+  other_authors <- str_split(pub_authors_non_epscor, ", ")[[1]]
+  for (name in other_authors) {
+    name_parts <- str_split(name, " ")[[1]]
+    last_name <- name_parts[length(name_parts)]
+    first_name <- paste(name_parts[1:length(name_parts)-1], collapse=" ")
+    print(paste(last_name, first_name, sep=", "))
+  }
+  #print(pub_authors)
+}
+```

@@ -4,12 +4,19 @@ output: html_notebook
 ---
 
 
-```{r}
+```{r, echo=FALSE, warning=FALSE, error=TRUE}
 library(tidyverse)
 library(readxl)
 library(httr)
 library(urltools)
 library(jsonlite)
+library(sys)
+library(igraph)
+library(network)
+library(tidygraph)
+library(ggraph)
+library(assertthat)
+library(stringi)
 ```
 ## Set base values
 ```{r}
@@ -31,65 +38,488 @@ airtable_get_values <- function(endpoint, base_id, api_key, table, max_records) 
   r <- param_set(r, key = "cellFormat", value = "json")
   r <- param_set(r, key = "view", value = url_encode("Grid view"))
   r <- param_set(r, key = "api_key", value = api_key)
-  print(paste("Retrieving: ", r))
-  resp <- GET(r)
-  return(fromJSON(content(resp,"text"))[["records"]][["fields"]])
+  #print(paste("Retrieving: ", r))
+  resp <- fromJSON(content(GET(r),"text"))
+  full_data <- resp
+  #print(resp)
+  while ("offset" %in% names(resp)) {
+    #print("making another request for more ")
+    #print(resp[["offset"]])
+    r <- param_set(r, key = "offset", value = resp[["offset"]])
+    resp <- fromJSON(content(GET(r),"text"))
+    full_data <- bind_rows(full_data, resp)
+  }
+  return(full_data[["records"]][["fields"]])
 }
 ```
 
 
-```{r}
-# Spreadsheet-based data
-data_pubs <- airtable_get_values(
-  endpoint = base_url, 
-  base_id = .base_id, 
-  api_key = .api_key, 
-  table = "pubs", 
-  max_records = max_records) %>% 
-  filter(title != "")
+```{r, message = FALSE, render = FALSE}
+# AirTable-based data
 
-data_pub_authors <- airtable_get_values(
-  endpoint = base_url, 
-  base_id = .base_id, 
-  api_key = .api_key, 
-  table = "pub_authors", 
-  max_records = max_records)$records
-
-data_data_authors <- airtable_get_values(
-  endpoint = base_url, 
-  base_id = .base_id, 
-  api_key = .api_key, 
-  table = "data_authors", 
-  max_records = max_records) $records
-
-data_datasets <- airtable_get_values(
-  endpoint = base_url, 
-  base_id = .base_id, 
-  api_key = .api_key, 
-  table = "datasets", 
-  max_records = max_records)$records
-
-data_code <- airtable_get_values(
-  endpoint = base_url, 
-  base_id = .base_id, 
-  api_key = .api_key, 
-  table = "code", 
-  max_records = max_records)$records
-
+# Authors
 data_authors <- airtable_get_values(
   endpoint = base_url, 
   base_id = .base_id, 
   api_key = .api_key, 
   table = "authors", 
-  max_records = max_records)$records
+  max_records = max_records)
 
+n_authors <- data_authors %>% 
+  mutate(
+    type = "author",
+    id = record_id,
+    name =  paste(author_last, author_first, sep = ", "),
+    color = "green",
+    group = NA) %>% 
+  select(id, type, name, color, group)
+
+Sys.sleep(1)
+
+# Publications
+data_pubs <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "pubs", 
+  max_records = max_records)
+
+n_pubs <- data_pubs %>% 
+  mutate(
+    type = "publication",
+    id = record_id,
+    name =  paste(substr(title,1,30), " ...", sep = ""),
+    color = "blue",
+    group = NA) %>% 
+  select(id, type, name, color, group)
+
+Sys.sleep(1)
+
+# Datasets
+data_datasets <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "datasets", 
+  max_records = max_records)
+
+n_datasets <- data_datasets %>% 
+  mutate(
+    type = "dataset",
+    id = record_id,
+    name =  paste(substr(dataset_title,1,30), " ...", sep = ""),
+    color = "red",
+    group = NA) %>% 
+  select(id, type, name, color, group)
+
+Sys.sleep(1)
+
+# Code
+data_code <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "code", 
+  max_records = max_records)
+
+n_code <- data_code %>% 
+  mutate(
+    type = "code",
+    id = record_id,
+    name =  paste(substr(code_title,1,30), " ...", sep = ""),
+    color = "cyan",
+    group = NA) %>% 
+  select(id, type, name, color, group)
+
+Sys.sleep(1)
+
+# Contact events
 data_contacts <- airtable_get_values(
   endpoint = base_url, 
   base_id = .base_id, 
   api_key = .api_key, 
   table = "contacts", 
-  max_records = max_records)$records
+  max_records = max_records)
 
+n_contacts <- data_contacts %>% 
+  mutate(
+    type = "contact",
+    id = contact_id,
+    name =  contact_id,
+    color = "yellow",
+    group = NA) %>% 
+  select(id, type, name, color, group)
+
+
+## Linking tables
+# Publications and authors
+data_pubs_authors <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "pub-authors", 
+  max_records = max_records)
+
+Sys.sleep(1)
+
+#Datasets and authors
+data_data_authors <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "data-authors", 
+  max_records = max_records) 
+
+Sys.sleep(1)
+
+# Code and authors
+data_code_authors <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "code-authors", 
+  max_records = max_records)
+
+Sys.sleep(1)
+
+# Publications and datasets
+data_pubs_datasets <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "pubs-datasets", 
+  max_records = max_records)  %>% 
+  filter(!is.null(pub_id) & !is.null(dataset_id))
+
+Sys.sleep(1)
+
+# Publications and code
+data_pubs_code <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "pubs-code", 
+  max_records = max_records)
+
+Sys.sleep(1)
+
+# Datasets and code
+data_datasets_code <- airtable_get_values(
+  endpoint = base_url, 
+  base_id = .base_id, 
+  api_key = .api_key, 
+  table = "datasets-code", 
+  max_records = max_records)
+
+Sys.sleep(1)
+
+n_all <- bind_rows(n_authors, n_pubs, n_datasets, n_code, n_contacts)
 
 
 ```
+
+## Build some initial edge lists
+```{r}
+working <- filter(data_pubs_datasets, (((dataset_id != "NULL") & (pub_id != "NULL")))) %>% 
+  arrange(desc(dataset_title))
+e_datasets_pubs <- unique(tibble(
+  from = unlist(working[["dataset_id"]]), 
+  to = unlist(working[["pub_id"]])))
+
+
+working <- filter(data_pubs_code, (((code_id != "NULL") & (pub_id != "NULL"))))
+e_code_pubs <- unique(tibble(
+  from = unlist(working[["code_id"]]), 
+  to = unlist(working[["pub_id"]])))
+
+working <- filter(data_pubs_authors, (((author_id != "NULL") & (pub_id != "NULL")))) %>% 
+  rowwise() %>% 
+  mutate(no_pubs = length(pub_id)) %>% 
+  filter(no_pubs == 1)
+e_authors_pubs <- unique(tibble(
+  from = unlist(working[["author_id"]]), 
+  to = unlist(working[["pub_id"]])))
+
+working <- filter(data_code_authors, (((code_id != "NULL") & (author_id != "NULL"))))
+e_authors_code <- unique(tibble(
+  from = unlist(working[["author_id"]]), 
+  to = unlist(working[["code_id"]])))
+
+working <- filter(data_data_authors, (((data_id != "NULL") & (author_id != "NULL"))))
+e_authors_datasets <- unique(tibble(
+  from = unlist(working[["author_id"]]), 
+  to = unlist(working[["data_id"]])))
+
+working <- filter(data_pubs_authors, (((author_id != "NULL") & (pub_id != "NULL") & (!is.na(lead))))) %>% 
+  rowwise() %>% 
+  mutate(no_pubs = length(pub_id)) %>% 
+  filter(no_pubs == 1)
+e_leads_pubs <- unique(tibble(
+  from = unlist(working[["author_id"]]), 
+  to = unlist(working[["pub_id"]])))
+
+e_all <- bind_rows(
+  e_datasets_pubs, 
+  e_code_pubs, 
+  e_authors_pubs, 
+  e_authors_code, 
+  e_authors_datasets)
+```
+
+## Initial network diagrams
+```{r}
+network_pubs_datasets <- network(e_datasets_pubs, vertex.attr = data_pubs, matrix.type = "edgelist", ignore.eval = FALSE)
+network_pubs_authors <- network(e_authors_pubs, vertex.attr = data_pubs, matrix.type = "edgelist", ignore.eval = FALSE)
+network_all <- network(e_all, vertex.attr = n_all, matrix.type = "edgelist", ignore.eval = FALSE)
+plot(network_pubs_datasets)
+plot(network_pubs_authors)
+plot(network_all)
+```
+
+## Some focused iGraphs
+
+Publications and Authors
+```{r}
+# publications and authors
+current_edges <- e_authors_pubs
+current_nodes <- n_all %>% 
+  filter(type == "author" | type == "publication")
+g <- graph_from_data_frame(d = current_edges, vertices = current_nodes, directed = FALSE)
+create_layout(g, layout = 'nicely')
+ggraph(g, layout = "fr") +
+  geom_edge_diagonal(width = .05)+
+  geom_node_point(aes(color = as.factor(type)), size = .5)+
+  labs(title = "EPSCoR Publications and Authors", color="Object Type" )
+#plot(g,
+#     vertex.shape=c("circle","square"),
+#     vertex.size=c(2),
+#     vertex.label="")
+```
+```{r}
+# publications and datasets
+current_edges <- e_datasets_pubs
+current_nodes <- n_all %>% 
+  filter(type == "dataset" | type == "publication")
+g <- graph_from_data_frame(d = current_edges, vertices = current_nodes, directed = TRUE)
+create_layout(g, layout = 'nicely')
+current_graph <- ggraph(g, layout = "dendrogram") +
+  geom_edge_diagonal(width = .05)+
+  geom_node_point(aes(filter=(substr(name,1,1) != " " & type=="dataset")),
+                  color = "green",
+                  size = .5)+
+  geom_node_point(aes(filter=(substr(name,1,1) == " " & type=="dataset")),
+                  color = "red",
+                  size = .5)+
+  geom_node_point(aes(filter=(type=="publication")),
+                  color = "blue",
+                  size = .5)+
+  geom_node_text(aes(label=name,
+                     filter=(type=="publication")),
+                  size=.75,
+                  label.size=0,
+                  hjust="right",
+                  nudge_y=-.015)+
+  geom_node_text(aes(label=name,
+                     filter=(type=="dataset")),
+                  size=.75,
+                  label.size=0,
+                  hjust="left",
+                  nudge_y=.015)+
+  labs(title = "EPSCoR Publications and Datasets", color="Object Type" )+
+  coord_fixed(ratio=15)+
+  scale_y_continuous(expand=expansion(mult=c(.15,.15)))+
+  coord_flip()
+ ggsave("./output/pubs-datasets.png",
+        plot=current_graph,
+        device="png",
+        width=6,
+        height=10,
+        dpi="print")
+ ggsave("./output/pubs-datasets.pdf",
+        plot=current_graph,
+        device="pdf",
+        width=6,
+        height=10,
+        dpi="print")
+ current_graph
+ 
+
+```
+
+```{r}
+# authors, publications and datasets
+pub_subset <- data_pubs %>% 
+  mutate(pub_id = record_id) %>% 
+  select(pub_id, title)
+pub_data <- data_pubs_datasets %>% 
+  mutate(dataset_id=unlist(`pubs-datasets_id`)) %>% 
+  select(pub_id,
+         dataset_id,
+         dataset_title) %>% 
+  mutate(pub_id=unlist(pub_id),
+         dataset_id=unlist(dataset_id))
+authors <- data_authors %>%
+  rowwise() %>% 
+  mutate(author_id=unlist(record_id),
+         name=paste(author_last, author_first, sep=", ")) %>% 
+  select(author_id, name)
+working <- data_pubs_authors %>% 
+  filter(lead) %>% 
+  rowwise() %>% 
+  mutate(pub_id=unlist(pub_id),
+         author_id=unlist(author_id)) %>% 
+  left_join(pub_subset) %>% 
+  select(-record_id, -lead) %>% 
+  left_join(pub_data) %>% 
+  left_join(authors) %>% 
+  mutate(dataset_title=unlist(dataset_title)) %>% 
+  arrange(dataset_title, name)
+  
+n_a <- working %>% 
+  mutate(id=author_id,
+         type="author",
+         name=name,
+         color="cyan") %>% 
+  select(id, type, name, color)
+n_p <- working %>% 
+  mutate(id=pub_id,
+         type="publication",
+         name=title,
+         color="blue") %>% 
+  select(id, type, name, color)
+n_d <- working %>% 
+  mutate(id=dataset_id,
+         type="dataset",
+         name=dataset_title,
+         color="red") %>% 
+  select(id, type, name, color)
+
+e_ap <- working %>% 
+  mutate(from=author_id,
+         to=pub_id) %>% 
+  select(from, to)
+e_pd <- working %>% 
+  mutate(from=pub_id,
+         to=dataset_id) %>% 
+  select(from, to)
+e_dp <- working %>% 
+  mutate(from=dataset_id,
+         to=pub_id) %>% 
+  select(from, to)
+e_ad <- working %>% 
+  mutate(from=author_id,
+         to=dataset_id) %>% 
+  select(from, to)
+
+current_edges <- bind_rows(e_ad, e_dp)
+current_nodes <- unique(bind_rows(n_a, n_d, n_p))
+g <- graph_from_data_frame(d = current_edges, vertices = current_nodes, directed = TRUE)
+create_layout(g, layout = 'nicely')
+current_graph <- ggraph(g, layout = "dendrogram") +
+  geom_edge_link(width = .05)+
+  geom_node_point(aes(filter=(substr(name,1,1) != " " & type=="dataset")),
+                  color = "green",
+                  size = .7)+
+  geom_node_point(aes(filter=(substr(name,1,1) == " " & type=="dataset")),
+                  color = "red",
+                  size = .2)+
+  geom_node_point(aes(filter=(type=="publication")),
+                  color = "blue",
+                  size = .5)+
+  geom_node_point(aes(filter=(type=="author")),
+                  color = "cyan",
+                  size = 1)+
+  geom_node_text(aes(label=name,
+                     filter=(type=="publication")),
+                  size=1,
+                  hjust="right",
+                  nudge_y=-.015)+
+  #geom_node_text(aes(label=name,
+  #                   filter=(type=="dataset")),
+  #                size=.75,
+  #                hjust="left",
+  #                nudge_y=.015)+
+  geom_node_text(aes(label=name,
+                     filter=(type=="author")),
+                  size=1,
+                  hjust="left",
+                  nudge_y=.015)+
+  labs(title = "EPSCoR Publications and Datasets", color="Object Type" )+
+  coord_fixed(ratio=2)+
+  scale_y_continuous(expand=expansion(mult=c(.35,.15)))+
+  coord_flip()
+ ggsave("./output/leads-pubs-datasets.png",
+        plot=current_graph,
+        device="png",
+        width=10,
+        height=10,
+        dpi="print")
+ ggsave("./output/leads-pubs-datasets.pdf",
+        plot=current_graph,
+        device="pdf",
+        width=10,
+        height=10,
+        dpi="print")
+ current_graph
+ 
+ 
+ # Future graph
+ current_graph <- ggraph(g, layout = "dendrogram") +
+  geom_edge_link(width = .05)+
+  geom_node_point(aes(filter=(substr(name,1,1) != " " & type=="dataset")),
+                  color = "green",
+                  size = .7)+
+  geom_node_point(aes(filter=(substr(name,1,1) == " " & type=="dataset")),
+                  color = "green",
+                  size = .7)+
+  geom_node_point(aes(filter=(type=="publication")),
+                  color = "blue",
+                  size = .5)+
+  geom_node_point(aes(filter=(type=="author")),
+                  color = "cyan",
+                  size = 1)+
+  geom_node_text(aes(label=name,
+                     filter=(type=="publication")),
+                  size=1,
+                  hjust="right",
+                  nudge_y=-.015)+
+  #geom_node_text(aes(label=name,
+  #                   filter=(type=="dataset")),
+  #                size=.75,
+  #                hjust="left",
+  #                nudge_y=.015)+
+  geom_node_text(aes(label=name,
+                     filter=(type=="author")),
+                  size=1,
+                  hjust="left",
+                  nudge_y=.015)+
+  labs(title = "EPSCoR Publications and Datasets", color="Object Type" )+
+  coord_fixed(ratio=2)+
+  scale_y_continuous(expand=expansion(mult=c(.35,.15)))+
+  coord_flip()
+ ggsave("./output/leads-pubs-datasets-future.png",
+        plot=current_graph,
+        device="png",
+        width=10,
+        height=10,
+        dpi="print")
+ ggsave("./output/leads-pubs-datasets-future.pdf",
+        plot=current_graph,
+        device="pdf",
+        width=10,
+        height=10,
+        dpi="print")
+ current_graph
+
+```
+
+## Full network diagrams
+```{r}
+full_set <- tbl_graph(nodes = n_all, edges = e_all, node_key = "id")
+ggraph(full_set)+
+  geom_edge_link()+
+  geom_node_point()+
+  theme_graph()
+```
+
+
